@@ -1,0 +1,46 @@
+---
+title: "Analyse exploratoire et fouille de données – Amazon Fashion"
+author: "Manar"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+set.seed(34)
+
+library(data.table)
+library(tidyverse)
+library(naniar)
+library(tidytext)
+```
+
+```{r load-data}
+df <- fread("data/amazon_fashion_dataset.csv")
+
+dim(df)
+View(df)
+```
+```{r summary-data}
+# Résumé des colonnes numériques et factorielles
+summary(df)
+```
+```{r check-na}
+na_summary <- df %>%
+  summarise(across(everything(), ~mean(is.na(.))*100)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "na_pct")
+
+na_summary
+```
+```{r check-na}
+library(naniar)
+vis_miss(df)
+```
+```{r check-na}
+df <- df %>%
+  mutate(
+    helpful_vote_na = is.na(helpful_vote),
+    review_length_na = is.na(review_length),
+    word_count_na = is.na(word_count),
+    text_na = is.na(text)
+  )
+```
