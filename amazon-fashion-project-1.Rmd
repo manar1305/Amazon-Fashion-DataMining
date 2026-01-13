@@ -35,12 +35,65 @@ na_summary
 library(naniar)
 vis_miss(df)
 ```
-```{r check-na}
+```{r missing-indicators}
 df <- df %>%
   mutate(
-    helpful_vote_na = is.na(helpful_vote),
-    review_length_na = is.na(review_length),
-    word_count_na = is.na(word_count),
-    text_na = is.na(text)
+    helpful_vote_na   = is.na(helpful_vote),
+    review_length_na  = is.na(review_length),
+    word_count_na     = is.na(word_count),
+    text_na           = is.na(text)
   )
+
+```
+
+```{r mcar-tests}
+# MCAR : test d'indépendance entre variable NA et autres variables
+chisq.test(table(df$helpful_vote_na, df$verified_purchase))
+chisq.test(table(df$review_length_na, df$verified_purchase))
+```
+```{r}
+# MAR : probabilité de NA selon autres variables observées
+glm(word_count_na ~ rating + verified_purchase,
+    data = df,
+    family = binomial)
+```
+```{r mnar-theory}
+# création d'un indicateur pour la variable textuelle
+df <- df %>% mutate(text_missing = ifelse(is.na(text), 1, 0))
+```
+```{r na-MCAR}
+df <- df %>%
+  mutate(
+    helpful_vote = ifelse(is.na(helpful_vote),
+                          median(helpful_vote, na.rm = TRUE),
+                          helpful_vote),
+    review_length = ifelse(is.na(review_length),
+                           median(review_length, na.rm = TRUE),
+                           review_length)
+  )
+```
+```{r impute-mar}
+df <- df %>%
+  group_by(rating) %>%
+  mutate(word_count = ifelse(is.na(word_count),
+                             median(word_count, na.rm = TRUE),
+                             word_count)) %>%
+  ungroup()
+```
+```{r}
+df <- df %>%
+  mutate(
+    text = na_if(text, ""),
+    text_missing = ifelse(is.na(text), 1, 0)
+  )
+```
+
+```{r}
+df %>%
+  summarise(across(everything(), ~mean(is.na(.))*100)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "na_pct")
+```
+
+```{r final-check}
+df %>% summarise(across(where(is.numeric), ~sum(is.na(.))))
 ```
