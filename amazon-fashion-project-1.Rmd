@@ -35,15 +35,20 @@ na_summary
 library(naniar)
 vis_miss(df)
 ```
+
 ```{r missing-indicators}
+library(dplyr)
+library(stringr)
+
+# Créer indicateurs et transformer "" en NA
 df <- df %>%
   mutate(
-    helpful_vote_na   = is.na(helpful_vote),
-    review_length_na  = is.na(review_length),
-    word_count_na     = is.na(word_count),
-    text_na           = is.na(text)
+    helpful_vote_na  = is.na(helpful_vote),
+    review_length_na = is.na(review_length),
+    word_count_na    = is.na(word_count),
+    text = na_if(text, ""),            # chaînes vides → NA
+    text_missing = ifelse(is.na(text), 1, 0)  # indicateur MNAR
   )
-
 ```
 
 ```{r mcar-tests}
@@ -51,40 +56,46 @@ df <- df %>%
 chisq.test(table(df$helpful_vote_na, df$verified_purchase))
 chisq.test(table(df$review_length_na, df$verified_purchase))
 ```
-```{r}
+```{r mar-tests}
 # MAR : probabilité de NA selon autres variables observées
 glm(word_count_na ~ rating + verified_purchase,
     data = df,
     family = binomial)
 ```
-```{r mnar-theory}
-# création d'un indicateur pour la variable textuelle
-df <- df %>% mutate(text_missing = ifelse(is.na(text), 1, 0))
-```
-```{r na-MCAR}
+```{r impute-mcar}
 df <- df %>%
   mutate(
-    helpful_vote = ifelse(is.na(helpful_vote),
-                          median(helpful_vote, na.rm = TRUE),
-                          helpful_vote),
-    review_length = ifelse(is.na(review_length),
-                           median(review_length, na.rm = TRUE),
-                           review_length)
+    helpful_vote = ifelse(
+      is.na(helpful_vote),
+      median(helpful_vote, na.rm = TRUE),
+      helpful_vote
+    )
   )
 ```
+
 ```{r impute-mar}
 df <- df %>%
+  mutate(
+    review_length = ifelse(!is.na(text), nchar(text), NA_integer_),
+    word_count    = ifelse(!is.na(text), str_count(text, "\\S+"), NA_integer_)
+  )
+
+df <- df %>%
   group_by(rating) %>%
-  mutate(word_count = ifelse(is.na(word_count),
-                             median(word_count, na.rm = TRUE),
-                             word_count)) %>%
+  mutate(
+    word_count = ifelse(is.na(word_count),
+                        median(word_count, na.rm = TRUE),
+                        word_count)
+  ) %>%
   ungroup()
 ```
-```{r}
+
+```{r final-check}
+df <- df %>% filter(!is.na(text))
 df <- df %>%
   mutate(
-    text = na_if(text, ""),
-    text_missing = ifelse(is.na(text), 1, 0)
+    review_length = nchar(text),
+    word_count = str_count(text, "\\S+")
   )
 ```
 
@@ -93,7 +104,137 @@ df %>%
   summarise(across(everything(), ~mean(is.na(.))*100)) %>%
   pivot_longer(everything(), names_to = "variable", values_to = "na_pct")
 ```
+```{r numeric-summary}
+# Sélection des variables numériques
+numeric_vars <- df %>% select(rating, helpful_vote, review_length, word_count)
 
-```{r final-check}
-df %>% summarise(across(where(is.numeric), ~sum(is.na(.))))
+# Résumé statistique
+summary(numeric_vars)
+
+# Boxplots
+library(ggplot2)
+ggplot(df, aes(x = "", y = review_length)) +
+  geom_boxplot(fill = "steelblue") +
+  labs(title = "Boxplot de la longueur des reviews", y = "Nombre de caractères")
+
+ggplot(df, aes(x = "", y = word_count)) +
+  geom_boxplot(fill = "coral") +
+  labs(title = "Boxplot du nombre de mots par review", y = "Nombre de mots")
+```
+```{r}
+# Distribution des ratings
+df %>%
+  count(rating) %>%
+  mutate(pct = n / sum(n) * 100)
+
+# Barplot des ratings
+ggplot(df, aes(x = factor(rating))) +
+  geom_bar(fill = "skyblue") +
+  labs(title = "Distribution des notes (ratings)", x = "Rating", y = "Nombre d'avis")
+
+# Barplot verified_purchase
+ggplot(df, aes(x = factor(verified_purchase))) +
+  geom_bar(fill = "orange") +
+  labs(title = "Distribution des achats vérifiés", x = "Verified Purchase", y = "Nombre d'avis")
+
+```
+```{r histograms}
+ggplot(df, aes(x = review_length)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  labs(title = "Histogramme de la longueur des reviews", x = "Longueur", y = "Nombre d'avis")
+
+ggplot(df, aes(x = word_count)) +
+  geom_histogram(bins = 50, fill = "darkgreen", alpha = 0.7) +
+  labs(title = "Histogramme du nombre de mots", x = "Nombre de mots", y = "Nombre d'avis")
+```
+```{r}
+library(GGally)
+ggpairs(df %>% select(rating, helpful_vote, review_length, word_count))
+```
+```{r text-cleaning}
+library(tidytext)
+library(tm)
+library(SnowballC)
+library(textstem)
+
+# Nettoyage texte : minuscules, suppression ponctuation
+df_clean <- df %>%
+  mutate(text_clean = str_to_lower(text)) %>%
+  mutate(text_clean = str_replace_all(text_clean, "[^[:alnum:][:space:]]", " "))
+
+# Tokenization
+df_tokens <- df_clean %>%
+  unnest_tokens(word, text_clean)
+
+# Suppression stopwords
+data("stop_words")
+df_tokens <- df_tokens %>%
+  anti_join(stop_words, by = "word")
+
+# Lemmatization
+df_tokens <- df_tokens %>%
+  mutate(word_lemma = lemmatize_words(word))
+```
+
+```{r word-cloud}
+library(wordcloud)
+library(RColorBrewer)
+
+# Comptage des mots
+word_freq <- df_tokens %>% count(word_lemma, sort = TRUE)
+
+# Wordcloud
+wordcloud(words = word_freq$word_lemma, freq = word_freq$n, max.words = 100, colors = brewer.pal(8, "Dark2"))
+```
+
+```{r sentiment-analysis}
+library(tidytext)
+bing <- get_sentiments("bing")
+
+df_sentiment <- df_tokens %>%
+  inner_join(bing, by = c("word_lemma" = "word")) %>%
+  count(sentiment, sort = TRUE)
+
+ggplot(df_sentiment, aes(x = sentiment, y = n, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Analyse de sentiment des mots", x = "Sentiment", y = "Nombre de mots")
+```
+
+```{r}
+# Review length vs rating
+ggplot(df, aes(x = factor(rating), y = review_length)) +
+  geom_boxplot(fill = "skyblue") +
+  labs(title = "Longueur des avis selon la note", x = "Rating", y = "Longueur du texte")
+
+# Word count vs helpful_vote
+ggplot(df, aes(x = helpful_vote, y = word_count)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Nombre de mots vs Helpful votes")
+```
+
+```{r tf-idf}
+df_tokens %>%
+  count(rating, word_lemma) %>%
+  bind_tf_idf(word_lemma, rating, n) %>%
+  arrange(desc(tf_idf)) %>%
+  head(20)
+```
+```{r dendrogram}
+library(dendextend)
+
+# Sélection des variables numériques
+num_vars <- df %>% select(rating, helpful_vote, review_length, word_count)
+
+# Standardisation pour que chaque variable ait la même échelle
+num_vars_scaled <- scale(num_vars)
+
+# Calcul de la distance euclidienne
+dist_matrix <- dist(num_vars_scaled, method = "euclidean")
+
+# Clustering hiérarchique
+hc <- hclust(dist_matrix, method = "ward.D2")
+
+# Plot du dendrogramme
+plot(hc, labels = FALSE, hang = -1, main = "Dendrogramme des avis Amazon Fashion")
+
 ```
